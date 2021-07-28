@@ -1,0 +1,556 @@
+---
+title: "Comparison in Predictability of Winner in Soccer vs. Football"
+author: "Jörg Duschmalé"
+date: "7/28/2021"
+output: pdf_document
+bibliography: references.bib
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(fig.width=6, fig.height=3)
+```
+
+## Introduction
+
+On a global scale, soccer is most certainly the most followed sports in the world. In the United States of America, however, football, tends to be more popular. Albeit both sports historically are cousins (together with rugby, aussie rules football and the likes) they are distinctly different with respect rules, setup and the necessary skills to win a game.
+
+In football scores are higher than in soccer and, additionally, the events scoring points tend to happen more often. This usually results in the better team winning the game. In stark contrast, as the scoring events in soccer happen much less often (many games actually end 0:0 or with a single goal margin), the winning team of a particular game is often not necessarily the better team as well. The significantly better team can dominate the game, push for the winning goal throughout and, yet, lose because of an individual mistake of their goalkeeper in the last minute. While for the passionate supporter of football this comes across as "unfair", for many soccer aficionado it is exactly this element of unpredictability that makes this game so irresistible [@nyt_2014]. 
+
+Within this report, which is the capstone project of a HarvardX Professional Certificate in data science [@irizarry_data_2021], using the caret package [@Kuhn09thecaret], several methods discussed in the course are used to predict soccer and football results based on game statistics datasets. Indeed, it is found that football results are predicted with a higher accuracy than soccer results. 
+
+The datasets used are readily available on Kaggle [@Kaggle]. For football the "NFL Game Stats" dataset was chosen [@football_data]. This dataset contains NFL games from seasons 2010 - 2019.  
+For soccer the selected dataset is called "English Premier League Match Events and Results 2001-2002 season onwards" [@soccer_data] and contains data on games in the EPL between years 2001 and 2020. 
+
+
+## Required Libraries
+
+The following libraries are necessary for the computation.
+
+```{r echo=TRUE, results =FALSE, cache=TRUE, warning=FALSE, message=FALSE}
+library(dslabs)
+library(tidyverse)
+library(caret)
+library(randomForest)
+library(MASS)
+```
+
+## Loading the Datasets and Preparing the Data
+
+The required datasets were downloaded from kaggle [@Kaggle] and saved on the harddrive within the datascience\\capstone_final folder. From there the data is loaded into R using the read.csv function.
+
+```{r echo=TRUE, results =FALSE, cache=TRUE, warning=FALSE, message=FALSE}
+
+# loading the data from the harddrive
+data<-read.csv("C:\\Users\\duschmaj\\Desktop\\datascience\\capstone_final\\matches.csv")
+
+gs2010 <- read.csv("C:\\Users\\duschmaj\\Desktop\\datascience\\capstone_final\\game_stats_2010.csv")
+gs2011 <- read.csv("C:\\Users\\duschmaj\\Desktop\\datascience\\capstone_final\\game_stats_2011.csv")
+gs2012 <- read.csv("C:\\Users\\duschmaj\\Desktop\\datascience\\capstone_final\\game_stats_2012.csv")
+gs2013 <- read.csv("C:\\Users\\duschmaj\\Desktop\\datascience\\capstone_final\\game_stats_2013.csv")
+gs2014 <- read.csv("C:\\Users\\duschmaj\\Desktop\\datascience\\capstone_final\\game_stats_2014.csv")
+gs2015 <- read.csv("C:\\Users\\duschmaj\\Desktop\\datascience\\capstone_final\\game_stats_2015.csv")
+gs2016 <- read.csv("C:\\Users\\duschmaj\\Desktop\\datascience\\capstone_final\\game_stats_2016.csv")
+gs2017 <- read.csv("C:\\Users\\duschmaj\\Desktop\\datascience\\capstone_final\\game_stats_2017.csv")
+gs2018 <- read.csv("C:\\Users\\duschmaj\\Desktop\\datascience\\capstone_final\\game_stats_2018.csv")
+gs2019 <- read.csv("C:\\Users\\duschmaj\\Desktop\\datascience\\capstone_final\\game_stats_2019.csv")
+data_nfl <- rbind(gs2010,gs2011,gs2012,gs2013,gs2014,gs2015,gs2016,gs2017,gs2018,gs2019)
+
+#select relevant predictors
+data <- data %>% filter(game_status=="FT") %>% summarize(
+  home_score, 
+  away_score, 
+  home_possessionPct, 
+  home_shotsSummary, 
+  away_shotsSummary, 
+  home_wonCorners, 
+  away_wonCorners, 
+  home_saves, 
+  away_saves)
+
+data_nfl <- data_nfl %>% summarize(
+  H.RushAtt, 
+  H.RushYards, 
+  H.PassYards, 
+  H.Turnover,
+  H.Score,
+  A.RushAtt, 
+  A.RushYards, 
+  A.PassYards, 
+  A.Turnover,
+  A.Score,
+  )
+
+```
+
+
+
+\begin{table}[h!] \centering \caption{The chosen predictors for each sport} \label{table1}
+\begin{tabular}{ll}
+ \hline
+ Soccer & Football \\
+ \hline
+ Ball possession [\%] & Rushing attempts \\
+ Total shots & Rushing Yards \\
+ Shots on goal & Passing Yards \\
+ Corners won & Turnover\\
+ Saves & \\
+ \hline
+\end{tabular}
+\end{table}
+
+From the available datasets a set of statistics for each sport were chosen, that were considered to be predictive for match outcome. In doing so, care was taken not to use many more predictors with one over the other sport in order to keep a certain amount of comparability. The chosen predictors are given in Table \ref{table1}
+
+Additionally, the soccer dataset contains % characters in the possession column, which needs to be removed. Also there is a single shotsSummary column in the format "shots (thereof on goal)" which needs to be split into two individual columns. Both is achieved using the code below.
+
+```{r echo=TRUE, results =FALSE, cache=TRUE, warning=FALSE, message=FALSE}
+#remove 0% possessionPct because this is indication that there is missing data.
+data <- data %>% filter(home_possessionPct !="0%") 
+
+#make possession numeric / split shots and shots on target
+data <- data %>% mutate(home_possessionPct=as.numeric(str_replace(data$home_possessionPct, "[%]", ""))) 
+
+data <- data %>% 
+  mutate(home_shots=as.numeric(str_extract(home_shotsSummary,"[0-9]*"))) %>% 
+  mutate(away_shots=as.numeric(str_extract(away_shotsSummary,"[0-9]*"))) %>% 
+  mutate(home_shots_ontarget=str_remove(home_shotsSummary,"^[0-9]*\\s\\(")) %>%
+  mutate(home_shots_ontarget=as.numeric(str_remove(home_shots_ontarget, "\\)"))) %>% 
+  mutate(away_shots_ontarget=str_remove(away_shotsSummary,"^[0-9]*\\s\\(")) %>%
+  mutate(away_shots_ontarget=as.numeric(str_remove(away_shots_ontarget, "\\)"))) 
+data <- data[,-which(names(data) %in% c("home_shotsSummary", "away_shotsSummary"))]
+
+```
+
+Next both in the football as well as the soccer dataset a column is introduced containing a factor if the hometeam (h) or the awayteam (a) won or if there was a draw (d). Scores are then removed from the dataset, because they should not be used for predictions (as they decide the outcome already). In the case of the football dataset there are only 8 entries with a draw (not shown) which is not enough instances for prediction. Thus these entries are removed. In the soccer dataset there are some instances with 0% ball possession. These entries are removed as well, as they are indicative of missing data. Finally entries containing Nas are removed as well. All of this is done with the following piece of code.
+
+```{r echo=TRUE, results =TRUE, cache=TRUE, warning=FALSE, message=FALSE}
+# decide if the hometeam (h) or the awayteam (a) won, or if there was a draw (d)
+data <- data %>% 
+  mutate(winner=ifelse(home_score>away_score, "h", ifelse(home_score==away_score, "d", "a"))) %>% 
+  mutate(winner=as.factor(winner))
+
+data_nfl <- data_nfl %>% 
+  mutate(winner=ifelse(H.Score>A.Score, "h", ifelse(H.Score==A.Score, "d", "a")))
+
+# Remove scores as they should not be used as predictors
+data <- data[,-which(names(data) %in% c("home_score", "away_score"))]
+data_nfl <- data_nfl[,-which(names(data_nfl) %in% c("H.Score", "A.Score"))]
+
+#remove 0% possessionPct because this is indication that there is missing data.
+data <- data %>% filter(home_possessionPct !=0) 
+
+#remove rows with Na's
+data <- na.omit(data)
+data_nfl <- na.omit(data_nfl)
+
+#remove draws as they are less than 0.3% of entries
+table(data_nfl$winner)
+table(data_nfl$winner)/nrow(data_nfl)
+data_nfl <- data_nfl %>% filter(winner != "d") %>% mutate(winner=as.factor(winner))
+
+```
+
+## Creation of final validation sets
+The data is then split into a dataset for model building and a validation dataset only used for the final validation of the built model. This is done using the following code.
+
+```{r echo=TRUE, results =FALSE, cache=TRUE, warning=FALSE, message=FALSE}
+# Creating a validation set for final model validation
+set.seed(1) 
+test_index <- createDataPartition(y = data$winner, times = 1, p = 0.1, list = FALSE)
+soccer <- data[-test_index,]
+soccer_validation <- data[test_index,]
+
+set.seed(240289) 
+test_index <- createDataPartition(y = data_nfl$winner, times = 1, p = 0.1, list = FALSE)
+football <- data_nfl[-test_index,]
+football_validation <- data_nfl[test_index,]
+```
+
+## Data analysis
+A summary of the datasets thus achieved is given below. 
+```{r echo=TRUE, results =TRUE, cache=TRUE, warning=FALSE, message=FALSE}
+# Creating a validation set for final model validation
+summary(soccer)
+summary(football)
+```
+
+When the outcome of the games is visualized as barplots, it becomes clear that in both sports the most likely outcome is a home victory, though in soccer the bias towards a home victory appears to be bigger. As a consequence there is more data available for the model to train to predict home victories. This has to be taken into account later (see below). 
+
+```{r echo=TRUE, results =TRUE, cache=TRUE, warning=FALSE, message=FALSE, fig.width=4, }
+soccer %>% ggplot(aes(winner)) + geom_bar()
+football %>% ggplot(aes(winner)) + geom_bar()
+```
+
+Related statistics such as shots and shots on target in soccer, as well as attempted rushings and rushing yards in football, are plotted against each other and colored by game outcome.  Identical graphs are made for both, home team statistics as well as away team statistics. It can be seen that these predictors actually do appear to predict game outcome (same color tends to be in the same area of the plot). However, what becomes also immediately clear is that in football there appears to be a much clearer separation than in soccer. On the one hand, this might be due to the fact that there are no draws in football. Draws in general appear to be hard to predict, based of their distribution accross all of the shot-data. But on the other hand, this already gives a hint that the original hypothesis that football games are more predictable than soccer games might be true.
+
+```{r echo=TRUE, results =TRUE, cache=TRUE, warning=FALSE, message=FALSE}
+#soccer
+soccer %>% ggplot(aes(home_shots, home_shots_ontarget, col=winner)) +
+              geom_point() + ggtitle("Soccer")
+soccer %>% ggplot(aes(away_shots, away_shots_ontarget, col=winner)) + 
+              geom_point() + ggtitle("Soccer")
+#football
+football %>% ggplot(aes(H.RushAtt, H.RushYards, col=winner)) +
+             geom_point() + ggtitle("Football")
+football %>% ggplot(aes(A.RushAtt, A.RushYards, col=winner)) + 
+             geom_point() + ggtitle("Football")
+```
+
+Boxplots for home-win and away-win (and draws in the case of football) for all of the chosen predictors support the same notion. While, at first sight, correlations between many of the chosen statistics with winning generally appear to be surprisingly small, there appears to be a tendency towards stronger correlations in football than in soccer (compare quartile separation within the boxplots below). Again, draws in soccer often appear to be highly similar to home wins with respect to many predictors and thus are expected to be very difficult to predict. In football, rushing appears to be much more predictive than passing, while turnovers obviously play an important role as well with a strong negative correlation to winning.
+
+```{r echo=TRUE, results =TRUE, cache=TRUE, warning=FALSE, message=FALSE}
+#soccer
+soccer %>% ggplot(aes(winner, home_possessionPct)) + geom_boxplot() + 
+  ggtitle("Soccer")
+soccer %>% ggplot(aes(winner, home_shots)) + geom_boxplot() + ggtitle("Soccer")
+soccer %>% ggplot(aes(winner, home_shots_ontarget)) + geom_boxplot() + 
+  ggtitle("Soccer")
+soccer %>% ggplot(aes(winner, home_wonCorners)) + geom_boxplot() + 
+  ggtitle("Soccer")
+soccer %>% ggplot(aes(winner, home_saves)) + geom_boxplot() + ggtitle("Soccer")
+
+soccer %>% ggplot(aes(winner, away_shots)) + geom_boxplot() + ggtitle("Soccer")
+soccer %>% ggplot(aes(winner, away_shots_ontarget)) + geom_boxplot() + 
+  ggtitle("Soccer")
+soccer %>% ggplot(aes(winner, away_wonCorners)) + geom_boxplot() + 
+  ggtitle("Soccer")
+soccer %>% ggplot(aes(winner, away_saves)) + geom_boxplot() + ggtitle("Soccer")
+
+#football
+football %>% ggplot(aes(winner, H.RushAtt)) + geom_boxplot() + 
+  ggtitle("Football")
+football %>% ggplot(aes(winner, H.RushYards)) + geom_boxplot() + 
+  ggtitle("Football")
+football %>% ggplot(aes(winner, H.PassYards)) + geom_boxplot() + 
+  ggtitle("Football")
+football %>% ggplot(aes(winner, H.Turnover)) + geom_boxplot() + 
+  ggtitle("Football")
+
+football %>% ggplot(aes(winner, A.RushAtt)) + geom_boxplot() + 
+  ggtitle("Football")
+football %>% ggplot(aes(winner, A.RushYards)) + geom_boxplot() + 
+  ggtitle("Football")
+football %>% ggplot(aes(winner, A.PassYards)) + geom_boxplot() + 
+  ggtitle("Football")
+football %>% ggplot(aes(winner, A.Turnover)) + geom_boxplot() + 
+  ggtitle("Football")
+```
+
+## Model Building
+
+### Soccer
+For model building, the soccer dataset is again split into a train and a test set.
+
+```{r echo=TRUE, results =FALSE, cache=TRUE, warning=FALSE, message=FALSE}
+set.seed(13041984)
+test_index <- createDataPartition(y = soccer$winner, times = 1, p = 0.1, list = FALSE)
+train <- soccer[-test_index,]
+test <- soccer[test_index,]
+```
+
+The resulting test set contains 189 away wins, 162 draws and 299 home wins. These numbers are important to keep in mind when interpreting confusion matrices later on. 
+
+```{r echo=TRUE, results =TRUE, cache=TRUE, warning=FALSE, message=FALSE}
+table(test$winner)
+```
+
+For model building accuracy of predictions was chosen as the decisive measure, because there is no preference whatsoever towards correctly predicting either of the possible game outcomes. For comparison's sake the accuracy of guessing a game outcome was calculated. Because the data (and the sport itself?) has a bias towards home wins, the accuracy was also calculated predicting every game as a home win. The results of these calculations are given below. 
+
+```{r echo=TRUE, results =TRUE, cache=TRUE, warning=FALSE, message=FALSE}
+# guess
+random_result <- test %>% mutate(pred=sample(c("h","a","d"), nrow(test), replace=TRUE)) %>% 
+  summarize(accuracy=mean(winner==pred))
+
+results <- data.frame(what="Soccer: random guessing", accuracy=random_result)
+
+# all home wins
+all_h <- test %>% mutate(pred=replicate(nrow(test), "h")) %>%
+  summarize(accuracy=mean(winner==pred))
+results <- bind_rows(results, data.frame(what="Soccer: All home wins", accuracs=all_h))
+results
+```
+
+Next the caret package is used in order to apply several classification algorithms to the result prediction. 
+
+#### K Nearest Neighbours
+
+The first method tried is k nearest neighbours (KNN), where the outcome is decided based on the average properties of the neighboring data points. The number of neighbors used (k) is a tuning parameter. Here 9 values between 5 and 70 are examined. Model training is achieved using the caret package with the code below.
+
+```{r echo=TRUE, results =TRUE, cache=TRUE, warning=FALSE, message=FALSE}
+fit_knn <- train(winner ~ .,  method = "knn",  
+                 tuneGrid = data.frame(k = seq(5, 70, 5)), data = train)
+```
+
+As can be seen in the following plot, an optimal accuracy is obtained when using a k value of 60.
+
+```{r echo=TRUE, results=TRUE, cache=TRUE, warning=FALSE, message=FALSE}
+ggplot(fit_knn, highlight=TRUE)
+```
+
+When the obtained model is applied on the test set, the following accuracy and confusion matrix is obtained.
+
+```{r echo=TRUE, results=TRUE, cache=TRUE, warning=FALSE, message=FALSE}
+knn_result <- test %>% mutate(pred=predict(fit_knn, test)) %>% summarize(accuracy=mean(winner==pred))
+results<- bind_rows(results, data.frame(what="Soccer: KNN", accuracy=knn_result))
+results
+confusionMatrix(predict(fit_knn, test), test$winner)[2]
+```
+
+While the obtained accuracy is somewhat better than just guessing home-win all the time, the improvement is only small (from 46% to 53%). A look at the confusion matrix shows that the model predicted 452 times a home win. Unsurprisingly, 248 of the 299 home victories were predicted correctly. As expected, predicting draws turns out to be particularly challenging and the model only called 24 draws and only 9 of 162 correctly.
+
+#### Linear and Quadratic Discriminant Analysis (LDA and QDA)
+
+Next LDA and QDA were applied to the problem of predicting game outcomes. With these methods boundaries between classifiers are calculated with allow to decide where a particular point belongs. Strictly speaking, for these methods to work, data needs to be normally distributed. A qq-plot on home shots demonstrates that while the normal distribution is not perfect, the data appears to be somewhat normally distributed. 
+
+```{r echo=TRUE, results=TRUE, cache=TRUE, warning=FALSE, message=FALSE}
+train %>% ggplot(aes(sample=home_shots)) + geom_qq() + geom_qq_line()
+```
+
+The model training and the obtained results are given below.
+
+```{r echo=TRUE, results=TRUE, cache=TRUE, warning=FALSE, message=FALSE}
+#LDA
+fit_lda <- train(winner ~ ., method = "lda", data = train)
+lda_result <- test %>% mutate(pred=predict(fit_lda, test)) %>% 
+  summarize(accuracy=mean(winner==pred))
+results <- bind_rows(results, data.frame(what="Soccer: LDA", accuracy=lda_result))
+confusionMatrix(predict(fit_lda, test), test$winner)[2]
+
+#QDA
+fit_qda <- train(winner ~ ., method = "qda", data = train)
+qda_result <- test %>% mutate(pred=predict(fit_qda, test)) %>% 
+  summarize(accuracy=mean(winner==pred))
+results <- bind_rows(results, data.frame(what="Soccer: QDA", accuracy=qda_result))
+results
+confusionMatrix(predict(fit_qda, test), test$winner)[2]
+```
+
+Both LDA as well as QDA show a markedly improved accuracy of match outcome predictions (67% and 68% respectively). Interestingly compared to KNN they are both much better in correctly predicting away wins getting 138 and 130 right out of the 189. Still predicting a draw is challenging even though especially QDA does a much better job than KNN (predicting 58 of the 162 draws right).
+
+#### Decision Tree
+
+Next an algorythm building a decision tree for classification is examined. Again there is a tuning parameter in this method, the complexity parameter which is the minimum improvement necessary for the model in order to create another decision node. The results of these calculations is given below.
+
+```{r echo=TRUE, results=TRUE, cache=TRUE, warning=FALSE, message=FALSE}
+# rpart
+fit_rpart <- train(winner ~ ., method = "rpart",
+                     tuneGrid = data.frame(cp = seq(0.0, 0.1, len = 25)),
+                     data = train)
+ggplot(fit_rpart, highlight = TRUE)
+
+rpart_result <- test %>% mutate(pred=predict(fit_rpart, test)) %>% 
+  summarize(accuracy=mean(winner==pred))
+results <- bind_rows(results, data.frame(what="Soccer: rpart", accuracy=rpart_result))
+results
+confusionMatrix(predict(fit_rpart, test), test$winner)[2]
+
+```
+
+The best model is obtained with a complexity parameter 0.0042 giving a model predicting the game outcome with an accuracy of 59%. This is better than KNN but distinctly lower than both LDA and QDA. Again the draws turn out to be particularly difficult to predict.
+
+One advantage of a decision tree is that its outcome can be easily interpreted. The tree obtained above is depicted below. Highly interestingly, a game outcome appears to be mainly depending on which team manages to bring most shots on goal, followed by the performance of the goalkeeper (i.e. how many of those shots are saved). 
+
+```{r echo=TRUE, results=TRUE, cache=TRUE, warning=FALSE, message=FALSE, fig.height=6, fig.width=10}
+plot(fit_rpart$finalModel)
+text(fit_rpart$finalModel)
+```
+
+
+#### Random Forest
+
+Finally, a random forest algorythm is to be examined. Random forests are bundles of decision trees that are used to classify data points. Due to the long computation time of this method, only two minimal nodesizes are examined, a small one at 3 and a large one at 50, with the one at 3 leading to a better model (see plot below).
+
+```{r echo=TRUE, results=TRUE, cache=TRUE, warning=FALSE, message=FALSE}
+#random forest
+fit_randomforest <- train(winner ~ ., method = "Rborist",
+                    tuneGrid = data.frame(predFixed = 2, minNode = c(3, 50)),
+                    data = train)
+
+ggplot(fit_randomforest, highlight=TRUE)
+
+randomforest_result <- test %>% mutate(pred=predict(fit_randomforest, test)) %>% summarize(accuracy=mean(winner==pred))
+results <- bind_rows(results, data.frame(what="Soccer: Random Forest", accuracy=randomforest_result))
+results
+
+confusionMatrix(predict(fit_randomforest, test), test$winner)[2]
+```
+
+Random forest gives a model predicting the game outcomes with an accuracy of 67%, peing on par with LDA and QDA. Also the confusion matrix is very similar to the one obtained using QDA, including a relatively good result in predicting draws.
+
+#### Ensemble
+
+The combination of several methods for improving predictions is called ensembling. Here it is for example possible to cobine the predictions of the three best methods (LDA, QDA and RF) for deciding if a game should be classified as home win, away win or draw. The corresponding result is obtained with the code below.
+
+```{r echo=TRUE, results=TRUE, cache=TRUE, warning=FALSE, message=FALSE}
+# Ensemble
+ensemble <- data.frame(QDA= predict(fit_qda, test),
+                       LDA= predict(fit_lda, test),
+                       RF = predict(fit_randomforest, test))
+
+read_out <- function(x){names(which.max(table(t(ensemble[x,]))))}
+ensemble_pred <- sapply(seq(1,nrow(ensemble)), read_out)
+ensemble_result <- test %>% cbind(ensemble_pred) %>% summarize(accuracy=mean(winner==ensemble_pred))
+results <- bind_rows(results, data.frame(what="Soccer: Ensemble", accuracy=ensemble_result))
+results
+confusionMatrix(as.factor(ensemble_pred), test$winner)[2]
+```
+
+Indeed, the resulting accuracy is slightly better than all of the combined ones - albeit only by a negligible margin. Additionally, while the predictions of home victories and away victories is good, the ensemble performs again much worse than QDA and Random Forest, when it comes to predicting draws.
+
+
+### Football
+All the above steps are repeated for the football dataset. 
+```{r echo=TRUE, results=TRUE, cache=TRUE, warning=FALSE, message=FALSE}
+# Creating train and test set for model creation
+set.seed(020816)
+test_index <- createDataPartition(y = football$winner, times = 1, p = 0.1, list = FALSE)
+train_nfl <- football[-test_index,]
+test_nfl <- football[test_index,]
+
+#MODEL BUILDING
+# guess
+random_result_nfl <- test_nfl %>% 
+  mutate(pred=sample(c("h","a","d"), nrow(test_nfl), replace=TRUE)) %>% 
+  summarize(accuracy=mean(winner==pred))
+results <- bind_rows(results, data.frame(what="Footall: random guessing", accuracy=random_result_nfl))
+
+# all home wins
+all_h_nfl <- test_nfl %>% mutate(pred=replicate(nrow(test_nfl), "h")) %>% 
+  summarize(accuracy=mean(winner==pred))
+results <- bind_rows(results, data.frame(what="Football: All home wins", accuracy=all_h_nfl))
+
+# knn
+fit_knn_nfl <- train(winner ~ .,  method = "knn", 
+                 tuneGrid = data.frame(k = seq(1, 100, 5)), 
+                 data = train_nfl)
+knn_result_nfl <- test_nfl %>% mutate(pred=predict(fit_knn_nfl, test_nfl)) %>%
+  summarize(accuracy=mean(winner==pred))
+results<- bind_rows(results, data.frame(what="Football: KNN", accuracy=knn_result_nfl))
+
+#LDA
+fit_lda_nfl <- train(winner ~ ., method = "lda", data = train_nfl)
+lda_result_nfl <- test_nfl %>% mutate(pred=predict(fit_lda_nfl, test_nfl)) %>%
+  summarize(accuracy=mean(winner==pred))
+results <- bind_rows(results, data.frame(what="Football: LDA", accuracy=lda_result_nfl))
+
+#QDA
+fit_qda_nfl <- train(winner ~ ., method = "qda", data = train_nfl)
+qda_result_nfl <- test_nfl %>% mutate(pred=predict(fit_qda_nfl, test_nfl)) %>%
+  summarize(accuracy=mean(winner==pred))
+results <- bind_rows(results, data.frame(what="Football: QDA", accuracy=qda_result_nfl))
+
+# rpart
+fit_rpart_nfl <- train(winner ~ ., method = "rpart",
+                   tuneGrid = data.frame(cp = seq(0.0, 0.1, len = 25)),
+                   data = train_nfl)
+rpart_result_nfl <- test_nfl %>% mutate(pred=predict(fit_rpart_nfl, test_nfl)) %>%
+  summarize(accuracy=mean(winner==pred))
+results <- bind_rows(results, data.frame(what="Football: rpart", accuracy=rpart_result_nfl))
+
+# random forest
+
+fit_randomforest_nfl <- train(winner ~ .,
+                          method = "Rborist",
+                          tuneGrid = data.frame(predFixed = 2, minNode = c(3, 50)),
+                          data = train_nfl)
+randomforest_result_nfl <- test_nfl %>% 
+  mutate(pred=predict(fit_randomforest_nfl, test_nfl)) %>%
+  summarize(accuracy=mean(winner==pred))
+results <- bind_rows(results, data.frame(what="Football: Random Forest", accuracy=randomforest_result_nfl))
+
+# Ensemble
+
+ensemble_nfl <- data.frame(QDA= predict(fit_qda_nfl, test_nfl),
+                           LDA= predict(fit_lda_nfl, test_nfl),
+                           RF = predict(fit_randomforest_nfl, test_nfl))
+read_out <- function(x){names(which.max(table(t(ensemble_nfl[x,]))))}
+ensemble_pred_nfl <- sapply(seq(1,nrow(ensemble_nfl)), read_out)
+ensemble_result_nfl <- test_nfl %>% cbind(ensemble_pred_nfl) %>%
+  summarize(accuracy=mean(winner==ensemble_pred_nfl))
+results <- bind_rows(results, data.frame(what="Football: Ensemble", accuracy=ensemble_result_nfl))
+results
+
+```
+
+First of all, all the examined methods score higher accuracy in predicting match outcomes in football compared to soccer. Again, the most successful methods are LDA, QDA and Random Forest, albeit the decision tree also performes very well here. The corresponding decision tree is given below. As hypothesized in the data analysis part (see above), results appear to be relatively well predicted by rushing attempts and turnovers.
+
+```{r echo=TRUE, results=TRUE, cache=TRUE, warning=FALSE, message=FALSE, fig.height=6, fig.width=10}
+plot(fit_rpart_nfl$finalModel)
+text(fit_rpart_nfl$finalModel)
+```
+
+Interestingly, LDA alone performes slightly better than the Ensemble, albeit only by a small margin. 
+
+
+```{r echo=TRUE, results=TRUE, cache=TRUE, warning=FALSE, message=FALSE}
+#confusion matrix KNN
+confusionMatrix(predict(fit_knn_nfl, test_nfl), test_nfl$winner)[2]
+
+#confusion matrix LDA
+confusionMatrix(predict(fit_lda_nfl, test_nfl), test_nfl$winner)[2]
+
+#confusion matrix QDA
+confusionMatrix(predict(fit_qda_nfl, test_nfl), test_nfl$winner)[2]
+
+#confusion matrix decision tree
+confusionMatrix(predict(fit_rpart_nfl, test_nfl), test_nfl$winner)[2]
+
+#confusion matrix random forest
+confusionMatrix(predict(fit_randomforest_nfl, test_nfl), test_nfl$winner)[2]
+
+#confusion matrix ensemble
+confusionMatrix(as.factor(ensemble_pred_nfl), test_nfl$winner)[2]
+```
+
+Confusion matrices demonstrate that there is no bias towards predicting away win or home win with either method. 
+
+Tuning parameters are slightly different for football than for soccer with respect to the numbers of neighbors in KNN and the complexity parameter in the decision tree method.
+
+```{r echo=TRUE, results=TRUE, cache=TRUE, warning=FALSE, message=FALSE}
+bestTune <- data.frame(KNN_k=fit_knn_nfl$bestTune$k, 
+                       rpart_cp=fit_rpart_nfl$bestTune$cp, 
+                       RF_minNode=fit_randomforest_nfl$bestTune$minNode)
+bestTune
+```
+
+
+## Results
+
+After having generated models for both predicting football results as well as soccer results, in this section the final prediction results are obtained using the two validation data sets. Therefore, both datasets are used to predict the winner of soccer and football games using for each sport an ensemble of the LDA, QDA and Random Forest models created before. This is achieved using the code below.
+
+```{r echo=TRUE, results=TRUE, cache=TRUE, warning=FALSE, message=FALSE}
+ensemble_final <- data.frame(QDA= predict(fit_qda, soccer_validation),
+                       LDA= predict(fit_lda, soccer_validation),
+                       RF = predict(fit_randomforest, soccer_validation))
+read_out <- function(x){names(which.max(table(t(ensemble_final[x,]))))}
+ensemble_final_pred <- sapply(seq(1,nrow(ensemble_final)), read_out)
+
+ensemble_final_result <- soccer_validation %>% cbind(ensemble_final_pred) %>%
+  summarize(accuracy=mean(winner==ensemble_final_pred))
+
+ensemble_final_nfl <- data.frame(QDA= predict(fit_qda_nfl, football_validation),
+                                 LDA= predict(fit_lda_nfl, football_validation),
+                                 RF = predict(fit_randomforest_nfl, football_validation))
+read_out <- function(x){names(which.max(table(t(ensemble_final_nfl[x,]))))}
+ensemble_final_pred_nfl <- sapply(seq(1,nrow(ensemble_final_nfl)), read_out)
+
+ensemble_final_result_nfl <- football_validation %>% cbind(ensemble_final_pred_nfl) %>%
+  summarize(accuracy=mean(winner==ensemble_final_pred_nfl))
+
+data.frame(sport=c("soccer","football"), accuracy=c(ensemble_final_result$accuracy,
+                                                    ensemble_final_result_nfl$accuracy))
+```
+
+For soccer, a final accuracy of match outcome prediction of 67% was achieved. This is well in line with what has been observed during model building. For football, on the other hand, the accuracy drops from 85% to 82% when going from the train/test dataset to the final validation dataset. This suggests that there might have been overtraining of the model to some degree.
+
+
+## Discussion
+
+In summary, the caret package was used to apply different classification algorithms to game statistics data sets in soccer and football. After examining several algorithms (KNN, LDA, QDA, decision tree and random forest), it was finally decided to perform predictions using an ensemble of LDA, QDA and random forest. Using these methods the outcome of soccer games (home win, away win or draw) could be predicted with an accuracy of 67%. On the other hand, using this methodology football results (home win or away win) could be predicted with an accuracy of 82%. These findings are in agreement with the original hypothesis, that football has a lower element of chance in deciding game results and that usually the better team dominates the game and ultimately is the winner. In this respect the results support with data what is generally assumed [@nyt_2014].
+
+Of course, this was a very rudimentary analysis with lots of caveats associated with it. While the origin of the data (NFL versus English Premier League) might still be comparable, as the two leagues are arguably the best ones in the world, the two data sets were not necessarily comparable in size, the football dataset being nearly three times as big. Another possible complication is that many soccer games end in draws, whereas draws are virtually absent in football. Comparing accuracy of classification with three classes (h, a, d) to classification with two classes (h, a) is certainly comparing apples with pears and should only be done with highest caution regarding the results.
+Additionally, more research would be necessary in order to find out which game statistics are most predictive for game outcome and should be used in an analysis like this one. Here, the main driver was data availability rather than well thought through decision. Finally, the classification algorithms used were the ones introduced in a online course on data science [@irizarry_data_2021]. Arguably, more research into suitable alternative methods combined with more diligent optimization of the tuning parameters could improve the prediction accuracy in both soccer as well as football. 
+
+Nonetheless, in conclusion, data science offers an intriguing possibility to examine generally assumed knowledge with scientific methods. The findings described above explain why so many people on this planet experience the joy, frustration and anger of the unpredictability of soccer (and why some football aficionados reject the game as unfair).
+
+## References
